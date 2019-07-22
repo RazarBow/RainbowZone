@@ -1,50 +1,35 @@
-// nolint
 package slashing
 
 import (
-	"time"
-
-	"github.com/tendermint/tendermint/crypto"
-
 	sdk "github.com/cosmos/cosmos-sdk/types"
-	"github.com/cosmos/cosmos-sdk/x/slashing/types"
 )
 
-func (k Keeper) AfterValidatorBonded(ctx sdk.Context, address sdk.ConsAddress, _ sdk.ValAddress) {
-	// Update the signing info start height or create a new signing info
-	_, found := k.getValidatorSigningInfo(ctx, address)
-	if !found {
-		signingInfo := types.NewValidatorSigningInfo(
-			address,
-			ctx.BlockHeight(),
-			0,
-			time.Unix(0, 0),
-			false,
-			0,
-		)
-		k.SetValidatorSigningInfo(ctx, address, signingInfo)
+// Create a new slashing period when a validator is bonded
+func (k Keeper) onValidatorBonded(ctx sdk.Context, address sdk.ConsAddress) {
+	slashingPeriod := ValidatorSlashingPeriod{
+		ValidatorAddr: address,
+		StartHeight:   ctx.BlockHeight(),
+		EndHeight:     0,
+		SlashedSoFar:  sdk.ZeroDec(),
 	}
+	k.addOrUpdateValidatorSlashingPeriod(ctx, slashingPeriod)
 }
 
-// When a validator is created, add the address-pubkey relation.
-func (k Keeper) AfterValidatorCreated(ctx sdk.Context, valAddr sdk.ValAddress) {
-	validator := k.sk.Validator(ctx, valAddr)
-	k.addPubkey(ctx, validator.GetConsPubKey())
-}
-
-// When a validator is removed, delete the address-pubkey relation.
-func (k Keeper) AfterValidatorRemoved(ctx sdk.Context, address sdk.ConsAddress) {
-	k.deleteAddrPubkeyRelation(ctx, crypto.Address(address))
+// Mark the slashing period as having ended when a validator begins unbonding
+func (k Keeper) onValidatorBeginUnbonding(ctx sdk.Context, address sdk.ConsAddress) {
+	slashingPeriod := k.getValidatorSlashingPeriodForHeight(ctx, address, ctx.BlockHeight())
+	slashingPeriod.EndHeight = ctx.BlockHeight()
+	k.addOrUpdateValidatorSlashingPeriod(ctx, slashingPeriod)
 }
 
 //_________________________________________________________________________________________
 
-// Hooks wrapper struct for slashing keeper
+// Wrapper struct
 type Hooks struct {
 	k Keeper
 }
 
-var _ types.StakingHooks = Hooks{}
+var _ sdk.StakingHooks = Hooks{}
 
 // Return the wrapper struct
 func (k Keeper) Hooks() Hooks {
@@ -52,25 +37,19 @@ func (k Keeper) Hooks() Hooks {
 }
 
 // Implements sdk.ValidatorHooks
-func (h Hooks) AfterValidatorBonded(ctx sdk.Context, consAddr sdk.ConsAddress, valAddr sdk.ValAddress) {
-	h.k.AfterValidatorBonded(ctx, consAddr, valAddr)
+func (h Hooks) OnValidatorBonded(ctx sdk.Context, address sdk.ConsAddress) {
+	h.k.onValidatorBonded(ctx, address)
 }
 
 // Implements sdk.ValidatorHooks
-func (h Hooks) AfterValidatorRemoved(ctx sdk.Context, consAddr sdk.ConsAddress, _ sdk.ValAddress) {
-	h.k.AfterValidatorRemoved(ctx, consAddr)
-}
-
-// Implements sdk.ValidatorHooks
-func (h Hooks) AfterValidatorCreated(ctx sdk.Context, valAddr sdk.ValAddress) {
-	h.k.AfterValidatorCreated(ctx, valAddr)
+func (h Hooks) OnValidatorBeginUnbonding(ctx sdk.Context, address sdk.ConsAddress) {
+	h.k.onValidatorBeginUnbonding(ctx, address)
 }
 
 // nolint - unused hooks
-func (h Hooks) AfterValidatorBeginUnbonding(_ sdk.Context, _ sdk.ConsAddress, _ sdk.ValAddress)  {}
-func (h Hooks) BeforeValidatorModified(_ sdk.Context, _ sdk.ValAddress)                          {}
-func (h Hooks) BeforeDelegationCreated(_ sdk.Context, _ sdk.AccAddress, _ sdk.ValAddress)        {}
-func (h Hooks) BeforeDelegationSharesModified(_ sdk.Context, _ sdk.AccAddress, _ sdk.ValAddress) {}
-func (h Hooks) BeforeDelegationRemoved(_ sdk.Context, _ sdk.AccAddress, _ sdk.ValAddress)        {}
-func (h Hooks) AfterDelegationModified(_ sdk.Context, _ sdk.AccAddress, _ sdk.ValAddress)        {}
-func (h Hooks) BeforeValidatorSlashed(_ sdk.Context, _ sdk.ValAddress, _ sdk.Dec)                {}
+func (h Hooks) OnValidatorCreated(_ sdk.Context, _ sdk.ValAddress)                           {}
+func (h Hooks) OnValidatorCommissionChange(_ sdk.Context, _ sdk.ValAddress)                  {}
+func (h Hooks) OnValidatorRemoved(_ sdk.Context, _ sdk.ValAddress)                           {}
+func (h Hooks) OnDelegationCreated(_ sdk.Context, _ sdk.AccAddress, _ sdk.ValAddress)        {}
+func (h Hooks) OnDelegationSharesModified(_ sdk.Context, _ sdk.AccAddress, _ sdk.ValAddress) {}
+func (h Hooks) OnDelegationRemoved(_ sdk.Context, _ sdk.AccAddress, _ sdk.ValAddress)        {}
