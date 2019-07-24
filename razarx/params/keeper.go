@@ -1,65 +1,57 @@
 package params
 
 import (
-	"fmt"
-
 	"github.com/cosmos/cosmos-sdk/codec"
 	sdk "github.com/cosmos/cosmos-sdk/types"
-	"github.com/cosmos/cosmos-sdk/x/params/subspace"
-	"github.com/cosmos/cosmos-sdk/x/params/types"
 
-	"github.com/tendermint/tendermint/libs/log"
+	"github.com/cosmos/cosmos-sdk/x/params/store"
 )
 
 // Keeper of the global paramstore
 type Keeper struct {
-	cdc       *codec.Codec
-	key       sdk.StoreKey
-	tkey      sdk.StoreKey
-	codespace sdk.CodespaceType
-	spaces    map[string]*Subspace
+	cdc  *codec.Codec
+	key  sdk.StoreKey
+	tkey sdk.StoreKey
+
+	stores map[string]*Store
 }
 
 // NewKeeper constructs a params keeper
-func NewKeeper(cdc *codec.Codec, key *sdk.KVStoreKey, tkey *sdk.TransientStoreKey, codespace sdk.CodespaceType) (k Keeper) {
+func NewKeeper(cdc *codec.Codec, key *sdk.KVStoreKey, tkey *sdk.TransientStoreKey) (k Keeper) {
 	k = Keeper{
-		cdc:       cdc,
-		key:       key,
-		tkey:      tkey,
-		codespace: codespace,
-		spaces:    make(map[string]*Subspace),
+		cdc:  cdc,
+		key:  key,
+		tkey: tkey,
+
+		stores: make(map[string]*Store),
 	}
 
 	return k
 }
 
-// Logger returns a module-specific logger.
-func (k Keeper) Logger(ctx sdk.Context) log.Logger {
-	return ctx.Logger().With("module", fmt.Sprintf("x/%s", types.ModuleName))
-}
-
-// Allocate subspace used for keepers
-func (k Keeper) Subspace(s string) Subspace {
-	_, ok := k.spaces[s]
+// Allocate substore used for keepers
+func (k Keeper) Substore(storename string) Store {
+	_, ok := k.stores[storename]
 	if ok {
-		panic("subspace already occupied")
+		panic("substore already occupied")
 	}
 
-	if s == "" {
-		panic("cannot use empty string for subspace")
+	if storename == "" {
+		panic("cannot use empty string for substore")
 	}
 
-	space := subspace.NewSubspace(k.cdc, k.key, k.tkey, s)
-	k.spaces[s] = &space
+	store := store.NewStore(k.cdc, k.key, k.tkey, storename)
 
-	return space
+	k.stores[storename] = &store
+
+	return store
 }
 
 // Get existing substore from keeper
-func (k Keeper) GetSubspace(s string) (Subspace, bool) {
-	space, ok := k.spaces[s]
+func (k Keeper) GetSubstore(storename string) (Store, bool) {
+	store, ok := k.stores[storename]
 	if !ok {
-		return Subspace{}, false
+		return Store{}, false
 	}
-	return *space, ok
+	return *store, ok
 }
