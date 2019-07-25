@@ -7,17 +7,25 @@ import (
 	"github.com/cosmos/cosmos-sdk/x/params"
 )
 
-// nolint
+// Parameter store default namestore
 const (
-	ParamStoreKeyDepositProcedure  = "gov/depositprocedure"
-	ParamStoreKeyVotingProcedure   = "gov/votingprocedure"
-	ParamStoreKeyTallyingProcedure = "gov/tallyingprocedure"
+	DefaultParamspace = "gov"
+)
+
+// Parameter store key
+var (
+	ParamStoreKeyDepositProcedure  = []byte("depositprocedure")
+	ParamStoreKeyVotingProcedure   = []byte("votingprocedure")
+	ParamStoreKeyTallyingProcedure = []byte("tallyingprocedure")
 )
 
 // Governance Keeper
 type Keeper struct {
-	// The reference to the ParamSetter to get and set Global Params
-	ps params.Setter
+	// The reference to the Param Keeper to get and set Global Params
+	pk params.Keeper
+
+	// The reference to the Paramstore to get and set gov specific params
+	ps params.Store
 
 	// The reference to the CoinKeeper to modify balances
 	ck bank.Keeper
@@ -38,10 +46,15 @@ type Keeper struct {
 	codespace sdk.CodespaceType
 }
 
-// NewGovernanceMapper returns a mapper that uses go-codec to (binary) encode and decode gov types.
-func NewKeeper(cdc *codec.Codec, key sdk.StoreKey, ps params.Setter, ck bank.Keeper, ds sdk.DelegationSet, codespace sdk.CodespaceType) Keeper {
+// NewKeeper returns a governance keeper. It handles:
+// - submitting governance proposals
+// - depositing funds into proposals, and activating upon sufficient funds being deposited
+// - users voting on proposals, with weight proportional to stake in the system
+// - and tallying the result of the vote.
+func NewKeeper(cdc *codec.Codec, key sdk.StoreKey, pk params.Keeper, ps params.Store, ck bank.Keeper, ds sdk.DelegationSet, codespace sdk.CodespaceType) Keeper {
 	return Keeper{
 		storeKey:  key,
+		pk:        pk,
 		ps:        ps,
 		ck:        ck,
 		ds:        ds,
@@ -49,11 +62,6 @@ func NewKeeper(cdc *codec.Codec, key sdk.StoreKey, ps params.Setter, ck bank.Kee
 		cdc:       cdc,
 		codespace: codespace,
 	}
-}
-
-// Returns the go-codec codec.
-func (keeper Keeper) WireCodec() *codec.Codec {
-	return keeper.cdc
 }
 
 // =====================================================
@@ -66,15 +74,14 @@ func (keeper Keeper) NewTextProposal(ctx sdk.Context, title string, description 
 		return nil
 	}
 	var proposal Proposal = &TextProposal{
-		ProposalID:       proposalID,
-		Title:            title,
-		Description:      description,
-		ProposalType:     proposalType,
-		Status:           StatusDepositPeriod,
-		TallyResult:      EmptyTallyResult(),
-		TotalDeposit:     sdk.Coins{},
-		SubmitBlock:      ctx.BlockHeight(),
-		VotingStartBlock: -1, // TODO: Make Time
+		ProposalID:   proposalID,
+		Title:        title,
+		Description:  description,
+		ProposalType: proposalType,
+		Status:       StatusDepositPeriod,
+		TallyResult:  EmptyTallyResult(),
+		TotalDeposit: sdk.Coins{},
+		SubmitTime:   ctx.BlockHeader().Time,
 	}
 	keeper.SetProposal(ctx, proposal)
 	keeper.InactiveProposalQueuePush(ctx, proposal)
@@ -108,7 +115,6 @@ func (keeper Keeper) DeleteProposal(ctx sdk.Context, proposal Proposal) {
 	store.Delete(KeyProposal(proposal.GetProposalID()))
 }
 
-// nolint: gocyclo
 // Get Proposal from store by ProposalID
 func (keeper Keeper) GetProposalsFiltered(ctx sdk.Context, voterAddr sdk.AccAddress, depositerAddr sdk.AccAddress, status ProposalStatus, numLatest int64) []Proposal {
 
@@ -200,7 +206,7 @@ func (keeper Keeper) peekCurrentProposalID(ctx sdk.Context) (proposalID int64, e
 }
 
 func (keeper Keeper) activateVotingPeriod(ctx sdk.Context, proposal Proposal) {
-	proposal.SetVotingStartBlock(ctx.BlockHeight())
+	proposal.SetVotingStartTime(ctx.BlockHeader().Time)
 	proposal.SetStatus(StatusVotingPeriod)
 	keeper.SetProposal(ctx, proposal)
 	keeper.ActiveProposalQueuePush(ctx, proposal)
