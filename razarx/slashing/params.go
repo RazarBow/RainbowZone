@@ -23,6 +23,11 @@ var (
 	KeySlashFractionDowntime    = []byte("SlashFractionDowntime")
 )
 
+// ParamTable for slashing module
+func ParamTable() params.Table {
+	return params.NewTable().RegisterParamStruct(&Params{})
+}
+
 // Params - used for initializing default parameter for slashing at genesis
 type Params struct {
 	MaxEvidenceAge           time.Duration `json:"max-evidence-age"`

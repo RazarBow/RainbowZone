@@ -19,6 +19,15 @@ var (
 	ParamStoreKeyTallyingProcedure = []byte("tallyingprocedure")
 )
 
+// Type declaration for parameters
+func ParamTable() params.Table {
+	return params.NewTable(
+		ParamStoreKeyDepositProcedure, DepositProcedure{},
+		ParamStoreKeyVotingProcedure, VotingProcedure{},
+		ParamStoreKeyTallyingProcedure, TallyingProcedure{},
+	)
+}
+
 // Governance Keeper
 type Keeper struct {
 	// The reference to the Param Keeper to get and set Global Params
