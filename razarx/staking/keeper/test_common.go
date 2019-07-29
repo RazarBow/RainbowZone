@@ -1,9 +1,8 @@
-package keeper // noalias
+package keeper
 
 import (
 	"bytes"
 	"encoding/hex"
-	"math/rand"
 	"strconv"
 	"testing"
 
@@ -14,24 +13,21 @@ import (
 	"github.com/tendermint/tendermint/crypto/ed25519"
 	dbm "github.com/tendermint/tendermint/libs/db"
 	"github.com/tendermint/tendermint/libs/log"
-	tmtypes "github.com/tendermint/tendermint/types"
 
 	"github.com/cosmos/cosmos-sdk/codec"
 	"github.com/cosmos/cosmos-sdk/store"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/cosmos/cosmos-sdk/x/auth"
 	"github.com/cosmos/cosmos-sdk/x/bank"
-	"github.com/cosmos/cosmos-sdk/x/params"
-	"github.com/cosmos/cosmos-sdk/x/staking/types"
-	"github.com/cosmos/cosmos-sdk/x/supply"
-	"github.com/cosmos/cosmos-sdk/x/supply/exported"
+	"github.com/cosmos/cosmos-sdk/x/stake/types"
 )
 
 // dummy addresses used for testing
-// nolint: unused deadcode
 var (
-	Addrs = createTestAddrs(500)
-	PKs   = createTestPubKeys(500)
+	Addrs       = createTestAddrs(500)
+	PKs         = createTestPubKeys(500)
+	emptyAddr   sdk.AccAddress
+	emptyPubkey crypto.PubKey
 
 	addrDels = []sdk.AccAddress{
 		Addrs[0],
@@ -50,7 +46,7 @@ var (
 
 // intended to be used with require/assert:  require.True(ValEq(...))
 func ValEq(t *testing.T, exp, got types.Validator) (*testing.T, bool, string, types.Validator, types.Validator) {
-	return t, exp.TestEquivalent(got), "expected:\t%v\ngot:\t\t%v", exp, got
+	return t, exp.Equal(got), "expected:\t%v\ngot:\t\t%v", exp, got
 }
 
 //_______________________________________________________________________________________
@@ -61,102 +57,73 @@ func MakeTestCodec() *codec.Codec {
 
 	// Register Msgs
 	cdc.RegisterInterface((*sdk.Msg)(nil), nil)
-	cdc.RegisterConcrete(bank.MsgSend{}, "test/staking/Send", nil)
-	cdc.RegisterConcrete(types.MsgCreateValidator{}, "test/staking/CreateValidator", nil)
-	cdc.RegisterConcrete(types.MsgEditValidator{}, "test/staking/EditValidator", nil)
-	cdc.RegisterConcrete(types.MsgUndelegate{}, "test/staking/Undelegate", nil)
-	cdc.RegisterConcrete(types.MsgBeginRedelegate{}, "test/staking/BeginRedelegate", nil)
+	cdc.RegisterConcrete(bank.MsgSend{}, "test/stake/Send", nil)
+	cdc.RegisterConcrete(bank.MsgIssue{}, "test/stake/Issue", nil)
+	cdc.RegisterConcrete(types.MsgCreateValidator{}, "test/stake/CreateValidator", nil)
+	cdc.RegisterConcrete(types.MsgEditValidator{}, "test/stake/EditValidator", nil)
+	cdc.RegisterConcrete(types.MsgBeginUnbonding{}, "test/stake/BeginUnbonding", nil)
+	cdc.RegisterConcrete(types.MsgBeginRedelegate{}, "test/stake/BeginRedelegate", nil)
 
 	// Register AppAccount
 	cdc.RegisterInterface((*auth.Account)(nil), nil)
-	cdc.RegisterConcrete(&auth.BaseAccount{}, "test/staking/BaseAccount", nil)
-	cdc.RegisterInterface((*exported.ModuleAccountI)(nil), nil)
-	cdc.RegisterConcrete(&supply.ModuleAccount{}, "test/staking/ModuleAccount", nil)
+	cdc.RegisterConcrete(&auth.BaseAccount{}, "test/stake/Account", nil)
 	codec.RegisterCrypto(cdc)
 
 	return cdc
 }
 
-// Hogpodge of all sorts of input required for testing.
-// `initPower` is converted to an amount of tokens.
-// If `initPower` is 0, no addrs get created.
-func CreateTestInput(t *testing.T, isCheckTx bool, initPower int64) (sdk.Context, auth.AccountKeeper, Keeper, types.SupplyKeeper) {
-	keyStaking := sdk.NewKVStoreKey(types.StoreKey)
-	tkeyStaking := sdk.NewTransientStoreKey(types.TStoreKey)
-	keyAcc := sdk.NewKVStoreKey(auth.StoreKey)
-	keyParams := sdk.NewKVStoreKey(params.StoreKey)
-	tkeyParams := sdk.NewTransientStoreKey(params.TStoreKey)
-	keySupply := sdk.NewKVStoreKey(supply.StoreKey)
+// default params without inflation
+func ParamsNoInflation() types.Params {
+	return types.Params{
+		InflationRateChange: sdk.ZeroDec(),
+		InflationMax:        sdk.ZeroDec(),
+		InflationMin:        sdk.ZeroDec(),
+		GoalBonded:          sdk.NewDecWithPrec(67, 2),
+		MaxValidators:       100,
+		BondDenom:           "steak",
+	}
+}
+
+// hogpodge of all sorts of input required for testing
+func CreateTestInput(t *testing.T, isCheckTx bool, initCoins int64) (sdk.Context, auth.AccountMapper, Keeper) {
+
+	keyStake := sdk.NewKVStoreKey("stake")
+	tkeyStake := sdk.NewTransientStoreKey("transient_stake")
+	keyAcc := sdk.NewKVStoreKey("acc")
 
 	db := dbm.NewMemDB()
 	ms := store.NewCommitMultiStore(db)
-	ms.MountStoreWithDB(tkeyStaking, sdk.StoreTypeTransient, nil)
-	ms.MountStoreWithDB(keyStaking, sdk.StoreTypeIAVL, db)
+	ms.MountStoreWithDB(tkeyStake, sdk.StoreTypeTransient, nil)
+	ms.MountStoreWithDB(keyStake, sdk.StoreTypeIAVL, db)
 	ms.MountStoreWithDB(keyAcc, sdk.StoreTypeIAVL, db)
-	ms.MountStoreWithDB(keyParams, sdk.StoreTypeIAVL, db)
-	ms.MountStoreWithDB(tkeyParams, sdk.StoreTypeTransient, db)
-	ms.MountStoreWithDB(keySupply, sdk.StoreTypeIAVL, db)
 	err := ms.LoadLatestVersion()
 	require.Nil(t, err)
 
 	ctx := sdk.NewContext(ms, abci.Header{ChainID: "foochainid"}, isCheckTx, log.NewNopLogger())
-	ctx = ctx.WithConsensusParams(
-		&abci.ConsensusParams{
-			Validator: &abci.ValidatorParams{
-				PubKeyTypes: []string{tmtypes.ABCIPubKeyTypeEd25519},
-			},
-		},
-	)
 	cdc := MakeTestCodec()
-
-	pk := params.NewKeeper(cdc, keyParams, tkeyParams, params.DefaultCodespace)
-
-	accountKeeper := auth.NewAccountKeeper(
-		cdc,    // amino codec
-		keyAcc, // target store
-		pk.Subspace(auth.DefaultParamspace),
+	accountMapper := auth.NewAccountMapper(
+		cdc,                   // amino codec
+		keyAcc,                // target store
 		auth.ProtoBaseAccount, // prototype
 	)
-
-	bk := bank.NewBaseKeeper(
-		accountKeeper,
-		pk.Subspace(bank.DefaultParamspace),
-		bank.DefaultCodespace,
-	)
-
-	supplyKeeper := supply.NewKeeper(cdc, keySupply, accountKeeper, bk, supply.DefaultCodespace,
-		[]string{auth.FeeCollectorName}, []string{}, []string{types.NotBondedPoolName, types.BondedPoolName})
-
-	initTokens := sdk.TokensFromConsensusPower(initPower)
-	initCoins := sdk.NewCoins(sdk.NewCoin(sdk.DefaultBondDenom, initTokens))
-	totalSupply := sdk.NewCoins(sdk.NewCoin(sdk.DefaultBondDenom, initTokens.MulRaw(int64(len(Addrs)))))
-
-	supplyKeeper.SetSupply(ctx, supply.NewSupply(totalSupply))
-
-	keeper := NewKeeper(cdc, keyStaking, tkeyStaking, supplyKeeper, pk.Subspace(DefaultParamspace), types.DefaultCodespace)
+	ck := bank.NewBaseKeeper(accountMapper)
+	keeper := NewKeeper(cdc, keyStake, tkeyStake, ck, types.DefaultCodespace)
+	keeper.SetPool(ctx, types.InitialPool())
 	keeper.SetParams(ctx, types.DefaultParams())
-
-	// set module accounts
-	feeCollectorAcc := supply.NewEmptyModuleAccount(auth.FeeCollectorName, supply.Basic)
-	notBondedPool := supply.NewEmptyModuleAccount(types.NotBondedPoolName, supply.Burner)
-	bondPool := supply.NewEmptyModuleAccount(types.BondedPoolName, supply.Burner)
-
-	err = notBondedPool.SetCoins(totalSupply)
-	require.NoError(t, err)
-
-	supplyKeeper.SetModuleAccount(ctx, feeCollectorAcc)
-	supplyKeeper.SetModuleAccount(ctx, bondPool)
-	supplyKeeper.SetModuleAccount(ctx, notBondedPool)
+	keeper.InitIntraTxCounter(ctx)
 
 	// fill all the addresses with some coins, set the loose pool tokens simultaneously
 	for _, addr := range Addrs {
-		_, err := bk.AddCoins(ctx, addr, initCoins)
-		if err != nil {
-			panic(err)
-		}
+		pool := keeper.GetPool(ctx)
+		_, _, err := ck.AddCoins(ctx, addr, sdk.Coins{
+			{keeper.GetParams(ctx).BondDenom, sdk.NewInt(initCoins)},
+		})
+		require.Nil(t, err)
+		pool.LooseTokens = pool.LooseTokens.Add(sdk.NewDec(initCoins))
+		keeper.SetPool(ctx, pool)
 	}
 
-	return ctx, accountKeeper, keeper, supplyKeeper
+	return ctx, accountMapper, keeper
 }
 
 func NewPubKey(pk string) (res crypto.PubKey) {
@@ -186,7 +153,7 @@ func TestAddr(addr string, bech string) sdk.AccAddress {
 	if err != nil {
 		panic(err)
 	}
-	if !bytes.Equal(bechres, res) {
+	if bytes.Compare(bechres, res) != 0 {
 		panic("Bech decode and hex decode don't match")
 	}
 
@@ -236,61 +203,19 @@ func ValidatorByPowerIndexExists(ctx sdk.Context, keeper Keeper, power []byte) b
 	return store.Has(power)
 }
 
-// update validator for testing
-func TestingUpdateValidator(keeper Keeper, ctx sdk.Context, validator types.Validator, apply bool) types.Validator {
+func testingUpdateValidator(keeper Keeper, ctx sdk.Context, validator types.Validator) types.Validator {
+	pool := keeper.GetPool(ctx)
 	keeper.SetValidator(ctx, validator)
-
-	// Remove any existing power key for validator.
-	store := ctx.KVStore(keeper.storeKey)
-	iterator := sdk.KVStorePrefixIterator(store, types.ValidatorsByPowerIndexKey)
-	defer iterator.Close()
-	deleted := false
-	for ; iterator.Valid(); iterator.Next() {
-		valAddr := types.ParseValidatorPowerRankKey(iterator.Key())
-		if bytes.Equal(valAddr, validator.OperatorAddress) {
-			if deleted {
-				panic("found duplicate power index key")
-			} else {
-				deleted = true
-			}
-			store.Delete(iterator.Key())
-		}
-	}
-
-	keeper.SetValidatorByPowerIndex(ctx, validator)
-	if apply {
-		keeper.ApplyAndReturnValidatorSetUpdates(ctx)
-		validator, found := keeper.GetValidator(ctx, validator.OperatorAddress)
-		if !found {
-			panic("validator expected but not found")
-		}
-		return validator
-	}
-	cachectx, _ := ctx.CacheContext()
-	keeper.ApplyAndReturnValidatorSetUpdates(cachectx)
-	validator, found := keeper.GetValidator(cachectx, validator.OperatorAddress)
+	keeper.SetValidatorByPowerIndex(ctx, validator, pool)
+	keeper.ApplyAndReturnValidatorSetUpdates(ctx)
+	validator, found := keeper.GetValidator(ctx, validator.OperatorAddr)
 	if !found {
 		panic("validator expected but not found")
 	}
 	return validator
 }
 
-// nolint: deadcode unused
 func validatorByPowerIndexExists(k Keeper, ctx sdk.Context, power []byte) bool {
 	store := ctx.KVStore(k.storeKey)
 	return store.Has(power)
-}
-
-// RandomValidator returns a random validator given access to the keeper and ctx
-func RandomValidator(r *rand.Rand, keeper Keeper, ctx sdk.Context) types.Validator {
-	vals := keeper.GetAllValidators(ctx)
-	i := r.Intn(len(vals))
-	return vals[i]
-}
-
-// RandomBondedValidator returns a random bonded validator given access to the keeper and ctx
-func RandomBondedValidator(r *rand.Rand, keeper Keeper, ctx sdk.Context) types.Validator {
-	vals := keeper.GetBondedValidatorsByPower(ctx)
-	i := r.Intn(len(vals))
-	return vals[i]
 }
