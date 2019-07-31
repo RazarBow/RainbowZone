@@ -1,17 +1,33 @@
-package staking
+package stake
 
 import (
 	"testing"
-
-	"github.com/stretchr/testify/require"
-	abci "github.com/tendermint/tendermint/abci/types"
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/cosmos/cosmos-sdk/x/auth"
 	"github.com/cosmos/cosmos-sdk/x/bank"
 	"github.com/cosmos/cosmos-sdk/x/mock"
-	"github.com/cosmos/cosmos-sdk/x/staking/types"
-	"github.com/cosmos/cosmos-sdk/x/supply"
+	"github.com/cosmos/cosmos-sdk/x/params"
+	"github.com/stretchr/testify/require"
+	abci "github.com/tendermint/tendermint/abci/types"
+	"github.com/tendermint/tendermint/crypto/ed25519"
+)
+
+var (
+	priv1 = ed25519.GenPrivKey()
+	addr1 = sdk.AccAddress(priv1.PubKey().Address())
+	priv2 = ed25519.GenPrivKey()
+	addr2 = sdk.AccAddress(priv2.PubKey().Address())
+	addr3 = sdk.AccAddress(ed25519.GenPrivKey().PubKey().Address())
+	priv4 = ed25519.GenPrivKey()
+	addr4 = sdk.AccAddress(priv4.PubKey().Address())
+	coins = sdk.Coins{sdk.NewCoin("foocoin", sdk.NewInt(10))}
+	fee   = auth.NewStdFee(
+		100000,
+		sdk.Coins{sdk.NewCoin("foocoin", sdk.NewInt(0))}...,
+	)
+
+	commissionMsg = NewCommissionMsg(sdk.ZeroDec(), sdk.ZeroDec(), sdk.ZeroDec())
 )
 
 // getMockApp returns an initialized mock application for this module.
@@ -19,26 +35,27 @@ func getMockApp(t *testing.T) (*mock.App, Keeper) {
 	mApp := mock.NewApp()
 
 	RegisterCodec(mApp.Cdc)
-	supply.RegisterCodec(mApp.Cdc)
 
-	keyStaking := sdk.NewKVStoreKey(StoreKey)
-	tkeyStaking := sdk.NewTransientStoreKey(TStoreKey)
-	keySupply := sdk.NewKVStoreKey(supply.StoreKey)
+	keyStake := sdk.NewKVStoreKey("stake")
 
-	bankKeeper := bank.NewBaseKeeper(mApp.AccountKeeper, mApp.ParamsKeeper.Subspace(bank.DefaultParamspace), bank.DefaultCodespace)
-	supplyKeeper := supply.NewKeeper(mApp.Cdc, keySupply, mApp.AccountKeeper, bankKeeper, supply.DefaultCodespace,
-		[]string{auth.FeeCollectorName}, []string{}, []string{types.NotBondedPoolName, types.BondedPoolName})
-	keeper := NewKeeper(mApp.Cdc, keyStaking, tkeyStaking, supplyKeeper, mApp.ParamsKeeper.Subspace(DefaultParamspace), DefaultCodespace)
+	tkeyStake := sdk.NewTransientStoreKey("transient_stake")
+	keyParams := sdk.NewKVStoreKey("params")
+	tkeyParams := sdk.NewTransientStoreKey("transient_params")
 
-	mApp.Router().AddRoute(RouterKey, NewHandler(keeper))
+	bankKeeper := bank.NewBaseKeeper(mApp.AccountMapper)
+	pk := params.NewKeeper(mApp.Cdc, keyParams, tkeyParams)
+
+	keeper := NewKeeper(mApp.Cdc, keyStake, tkeyStake, bankKeeper, pk.Subspace(DefaultParamspace), mApp.RegisterCodespace(DefaultCodespace))
+
+	mApp.Router().AddRoute("stake", NewHandler(keeper))
 	mApp.SetEndBlocker(getEndBlocker(keeper))
-	mApp.SetInitChainer(getInitChainer(mApp, keeper, mApp.AccountKeeper, supplyKeeper))
+	mApp.SetInitChainer(getInitChainer(mApp, keeper))
 
-	require.NoError(t, mApp.CompleteSetup(keyStaking, tkeyStaking, keySupply))
+	require.NoError(t, mApp.CompleteSetup(keyStake, tkeyStake, keyParams, tkeyParams))
 	return mApp, keeper
 }
 
-// getEndBlocker returns a staking endblocker.
+// getEndBlocker returns a stake endblocker.
 func getEndBlocker(keeper Keeper) sdk.EndBlocker {
 	return func(ctx sdk.Context, req abci.RequestEndBlock) abci.ResponseEndBlock {
 		validatorUpdates := EndBlocker(ctx, keeper)
@@ -51,21 +68,18 @@ func getEndBlocker(keeper Keeper) sdk.EndBlocker {
 
 // getInitChainer initializes the chainer of the mock app and sets the genesis
 // state. It returns an empty ResponseInitChain.
-func getInitChainer(mapp *mock.App, keeper Keeper, accountKeeper types.AccountKeeper, supplyKeeper types.SupplyKeeper) sdk.InitChainer {
+func getInitChainer(mapp *mock.App, keeper Keeper) sdk.InitChainer {
 	return func(ctx sdk.Context, req abci.RequestInitChain) abci.ResponseInitChain {
 		mapp.InitChainer(ctx, req)
 
-		// set module accounts
-		feeCollector := supply.NewEmptyModuleAccount(auth.FeeCollectorName, supply.Basic)
-		notBondedPool := supply.NewEmptyModuleAccount(types.NotBondedPoolName, supply.Burner)
-		bondPool := supply.NewEmptyModuleAccount(types.BondedPoolName, supply.Burner)
+		stakeGenesis := DefaultGenesisState()
+		stakeGenesis.Pool.LooseTokens = sdk.NewDec(100000)
 
-		supplyKeeper.SetModuleAccount(ctx, feeCollector)
-		supplyKeeper.SetModuleAccount(ctx, bondPool)
-		supplyKeeper.SetModuleAccount(ctx, notBondedPool)
+		validators, err := InitGenesis(ctx, keeper, stakeGenesis)
+		if err != nil {
+			panic(err)
+		}
 
-		stakingGenesis := DefaultGenesisState()
-		validators := InitGenesis(ctx, keeper, accountKeeper, supplyKeeper, stakingGenesis)
 		return abci.ResponseInitChain{
 			Validators: validators,
 		}
@@ -101,13 +115,11 @@ func checkDelegation(
 	require.False(t, found)
 }
 
-func TestStakingMsgs(t *testing.T) {
+func TestStakeMsgs(t *testing.T) {
 	mApp, keeper := getMockApp(t)
 
-	genTokens := sdk.TokensFromConsensusPower(42)
-	bondTokens := sdk.TokensFromConsensusPower(10)
-	genCoin := sdk.NewCoin(sdk.DefaultBondDenom, genTokens)
-	bondCoin := sdk.NewCoin(sdk.DefaultBondDenom, bondTokens)
+	genCoin := sdk.NewInt64Coin("steak", 42)
+	bondCoin := sdk.NewInt64Coin("steak", 10)
 
 	acc1 := &auth.BaseAccount{
 		Address: addr1,
@@ -126,31 +138,40 @@ func TestStakingMsgs(t *testing.T) {
 	// create validator
 	description := NewDescription("foo_moniker", "", "", "")
 	createValidatorMsg := NewMsgCreateValidator(
-		sdk.ValAddress(addr1), priv1.PubKey(), bondCoin, description, commissionRates, sdk.OneInt(),
+		sdk.ValAddress(addr1), priv1.PubKey(), bondCoin, description, commissionMsg,
 	)
 
-	header := abci.Header{Height: mApp.LastBlockHeight() + 1}
-	mock.SignCheckDeliver(t, mApp.Cdc, mApp.BaseApp, header, []sdk.Msg{createValidatorMsg}, []uint64{0}, []uint64{0}, true, true, priv1)
-	mock.CheckBalance(t, mApp, addr1, sdk.Coins{genCoin.Sub(bondCoin)})
-
-	header = abci.Header{Height: mApp.LastBlockHeight() + 1}
-	mApp.BeginBlock(abci.RequestBeginBlock{Header: header})
+	mock.SignCheckDeliver(t, mApp.BaseApp, []sdk.Msg{createValidatorMsg}, []int64{0}, []int64{0}, true, true, priv1)
+	mock.CheckBalance(t, mApp, addr1, sdk.Coins{genCoin.Minus(bondCoin)})
+	mApp.BeginBlock(abci.RequestBeginBlock{})
 
 	validator := checkValidator(t, mApp, keeper, sdk.ValAddress(addr1), true)
-	require.Equal(t, sdk.ValAddress(addr1), validator.OperatorAddress)
+	require.Equal(t, sdk.ValAddress(addr1), validator.OperatorAddr)
 	require.Equal(t, sdk.Bonded, validator.Status)
-	require.True(sdk.IntEq(t, bondTokens, validator.BondedTokens()))
+	require.True(sdk.DecEq(t, sdk.NewDec(10), validator.BondedTokens()))
 
-	header = abci.Header{Height: mApp.LastBlockHeight() + 1}
-	mApp.BeginBlock(abci.RequestBeginBlock{Header: header})
+	// addr1 create validator on behalf of addr2
+	createValidatorMsgOnBehalfOf := NewMsgCreateValidatorOnBehalfOf(
+		addr1, sdk.ValAddress(addr2), priv2.PubKey(), bondCoin, description, commissionMsg,
+	)
+
+	mock.SignCheckDeliver(t, mApp.BaseApp, []sdk.Msg{createValidatorMsgOnBehalfOf}, []int64{0, 1}, []int64{1, 0}, true, true, priv1, priv2)
+	mock.CheckBalance(t, mApp, addr1, sdk.Coins{genCoin.Minus(bondCoin).Minus(bondCoin)})
+	mApp.BeginBlock(abci.RequestBeginBlock{})
+
+	validator = checkValidator(t, mApp, keeper, sdk.ValAddress(addr2), true)
+	require.Equal(t, sdk.ValAddress(addr2), validator.OperatorAddr)
+	require.Equal(t, sdk.Bonded, validator.Status)
+	require.True(sdk.DecEq(t, sdk.NewDec(10), validator.Tokens))
+
+	// check the bond that should have been created as well
+	checkDelegation(t, mApp, keeper, addr1, sdk.ValAddress(addr1), true, sdk.NewDec(10))
 
 	// edit the validator
 	description = NewDescription("bar_moniker", "", "", "")
-	editValidatorMsg := NewMsgEditValidator(sdk.ValAddress(addr1), description, nil, nil)
+	editValidatorMsg := NewMsgEditValidator(sdk.ValAddress(addr1), description, nil)
 
-	header = abci.Header{Height: mApp.LastBlockHeight() + 1}
-	mock.SignCheckDeliver(t, mApp.Cdc, mApp.BaseApp, header, []sdk.Msg{editValidatorMsg}, []uint64{0}, []uint64{1}, true, true, priv1)
-
+	mock.SignCheckDeliver(t, mApp.BaseApp, []sdk.Msg{editValidatorMsg}, []int64{0}, []int64{2}, true, true, priv1)
 	validator = checkValidator(t, mApp, keeper, sdk.ValAddress(addr1), true)
 	require.Equal(t, description, validator.Description)
 
@@ -158,19 +179,17 @@ func TestStakingMsgs(t *testing.T) {
 	mock.CheckBalance(t, mApp, addr2, sdk.Coins{genCoin})
 	delegateMsg := NewMsgDelegate(addr2, sdk.ValAddress(addr1), bondCoin)
 
-	header = abci.Header{Height: mApp.LastBlockHeight() + 1}
-	mock.SignCheckDeliver(t, mApp.Cdc, mApp.BaseApp, header, []sdk.Msg{delegateMsg}, []uint64{1}, []uint64{0}, true, true, priv2)
-	mock.CheckBalance(t, mApp, addr2, sdk.Coins{genCoin.Sub(bondCoin)})
-	checkDelegation(t, mApp, keeper, addr2, sdk.ValAddress(addr1), true, bondTokens.ToDec())
+	mock.SignCheckDeliver(t, mApp.BaseApp, []sdk.Msg{delegateMsg}, []int64{1}, []int64{1}, true, true, priv2)
+	mock.CheckBalance(t, mApp, addr2, sdk.Coins{genCoin.Minus(bondCoin)})
+	checkDelegation(t, mApp, keeper, addr2, sdk.ValAddress(addr1), true, sdk.NewDec(10))
 
 	// begin unbonding
-	beginUnbondingMsg := NewMsgUndelegate(addr2, sdk.ValAddress(addr1), bondCoin)
-	header = abci.Header{Height: mApp.LastBlockHeight() + 1}
-	mock.SignCheckDeliver(t, mApp.Cdc, mApp.BaseApp, header, []sdk.Msg{beginUnbondingMsg}, []uint64{1}, []uint64{1}, true, true, priv2)
+	beginUnbondingMsg := NewMsgBeginUnbonding(addr2, sdk.ValAddress(addr1), sdk.NewDec(10))
+	mock.SignCheckDeliver(t, mApp.BaseApp, []sdk.Msg{beginUnbondingMsg}, []int64{1}, []int64{2}, true, true, priv2)
 
 	// delegation should exist anymore
 	checkDelegation(t, mApp, keeper, addr2, sdk.ValAddress(addr1), false, sdk.Dec{})
 
 	// balance should be the same because bonding not yet complete
-	mock.CheckBalance(t, mApp, addr2, sdk.Coins{genCoin.Sub(bondCoin)})
+	mock.CheckBalance(t, mApp, addr2, sdk.Coins{genCoin.Minus(bondCoin)})
 }

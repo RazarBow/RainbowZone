@@ -1,73 +1,42 @@
 package keeper
 
 import (
-	"container/list"
-	"fmt"
-
-	"github.com/tendermint/tendermint/libs/log"
-
 	"github.com/cosmos/cosmos-sdk/codec"
 	sdk "github.com/cosmos/cosmos-sdk/types"
+
+	"github.com/cosmos/cosmos-sdk/x/bank"
 	"github.com/cosmos/cosmos-sdk/x/params"
-	"github.com/cosmos/cosmos-sdk/x/staking/types"
+	"github.com/cosmos/cosmos-sdk/x/stake/types"
 )
 
-const aminoCacheSize = 500
-
-// Implements ValidatorSet interface
-var _ types.ValidatorSet = Keeper{}
-
-// Implements DelegationSet interface
-var _ types.DelegationSet = Keeper{}
-
-// keeper of the staking store
+// keeper of the stake store
 type Keeper struct {
-	storeKey           sdk.StoreKey
-	storeTKey          sdk.StoreKey
-	cdc                *codec.Codec
-	supplyKeeper       types.SupplyKeeper
-	hooks              types.StakingHooks
-	paramstore         params.Subspace
-	validatorCache     map[string]cachedValidator
-	validatorCacheList *list.List
+	storeKey   sdk.StoreKey
+	storeTKey  sdk.StoreKey
+	cdc        *codec.Codec
+	bankKeeper bank.Keeper
+	hooks      sdk.StakingHooks
+	paramstore params.Subspace
 
 	// codespace
 	codespace sdk.CodespaceType
 }
 
-// NewKeeper creates a new staking Keeper instance
-func NewKeeper(cdc *codec.Codec, key, tkey sdk.StoreKey, supplyKeeper types.SupplyKeeper,
-	paramstore params.Subspace, codespace sdk.CodespaceType) Keeper {
-
-	// ensure bonded and not bonded module accounts are set
-	if addr := supplyKeeper.GetModuleAddress(types.BondedPoolName); addr == nil {
-		panic(fmt.Sprintf("%s module account has not been set", types.BondedPoolName))
+func NewKeeper(cdc *codec.Codec, key, tkey sdk.StoreKey, ck bank.Keeper, paramstore params.Subspace, codespace sdk.CodespaceType) Keeper {
+	keeper := Keeper{
+		storeKey:   key,
+		storeTKey:  tkey,
+		cdc:        cdc,
+		bankKeeper: ck,
+		paramstore: paramstore.WithTypeTable(ParamTypeTable()),
+		hooks:      nil,
+		codespace:  codespace,
 	}
-
-	if addr := supplyKeeper.GetModuleAddress(types.NotBondedPoolName); addr == nil {
-		panic(fmt.Sprintf("%s module account has not been set", types.NotBondedPoolName))
-	}
-
-	return Keeper{
-		storeKey:           key,
-		storeTKey:          tkey,
-		cdc:                cdc,
-		supplyKeeper:       supplyKeeper,
-		paramstore:         paramstore.WithKeyTable(ParamKeyTable()),
-		hooks:              nil,
-		validatorCache:     make(map[string]cachedValidator, aminoCacheSize),
-		validatorCacheList: list.New(),
-		codespace:          codespace,
-	}
-}
-
-// Logger returns a module-specific logger.
-func (k Keeper) Logger(ctx sdk.Context) log.Logger {
-	return ctx.Logger().With("module", fmt.Sprintf("x/%s", types.ModuleName))
+	return keeper
 }
 
 // Set the validator hooks
-func (k *Keeper) SetHooks(sh types.StakingHooks) *Keeper {
+func (k Keeper) WithHooks(sh sdk.StakingHooks) Keeper {
 	if k.hooks != nil {
 		panic("cannot set validator hooks twice")
 	}
@@ -75,25 +44,56 @@ func (k *Keeper) SetHooks(sh types.StakingHooks) *Keeper {
 	return k
 }
 
+//_________________________________________________________________________
+
 // return the codespace
 func (k Keeper) Codespace() sdk.CodespaceType {
 	return k.codespace
 }
 
-// Load the last total validator power.
-func (k Keeper) GetLastTotalPower(ctx sdk.Context) (power sdk.Int) {
+//_______________________________________________________________________
+
+// load/save the pool
+func (k Keeper) GetPool(ctx sdk.Context) (pool types.Pool) {
 	store := ctx.KVStore(k.storeKey)
-	b := store.Get(types.LastTotalPowerKey)
+	b := store.Get(PoolKey)
 	if b == nil {
-		return sdk.ZeroInt()
+		panic("Stored pool should not have been nil")
 	}
-	k.cdc.MustUnmarshalBinaryLengthPrefixed(b, &power)
+	k.cdc.MustUnmarshalBinary(b, &pool)
 	return
 }
 
-// Set the last total validator power.
-func (k Keeper) SetLastTotalPower(ctx sdk.Context, power sdk.Int) {
+// set the pool
+func (k Keeper) SetPool(ctx sdk.Context, pool types.Pool) {
 	store := ctx.KVStore(k.storeKey)
-	b := k.cdc.MustMarshalBinaryLengthPrefixed(power)
-	store.Set(types.LastTotalPowerKey, b)
+	b := k.cdc.MustMarshalBinary(pool)
+	store.Set(PoolKey, b)
+}
+
+//__________________________________________________________________________
+
+// get the current in-block validator operation counter
+func (k Keeper) InitIntraTxCounter(ctx sdk.Context) {
+	store := ctx.KVStore(k.storeKey)
+	b := store.Get(IntraTxCounterKey)
+	if b == nil {
+		k.SetIntraTxCounter(ctx, 0)
+	}
+}
+
+// get the current in-block validator operation counter
+func (k Keeper) GetIntraTxCounter(ctx sdk.Context) int16 {
+	store := ctx.KVStore(k.storeKey)
+	b := store.Get(IntraTxCounterKey)
+	var counter int16
+	k.cdc.MustUnmarshalBinary(b, &counter)
+	return counter
+}
+
+// set the current in-block validator operation counter
+func (k Keeper) SetIntraTxCounter(ctx sdk.Context, counter int16) {
+	store := ctx.KVStore(k.storeKey)
+	bz := k.cdc.MustMarshalBinary(counter)
+	store.Set(IntraTxCounterKey, bz)
 }
