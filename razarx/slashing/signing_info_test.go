@@ -10,7 +10,7 @@ import (
 )
 
 func TestGetSetValidatorSigningInfo(t *testing.T) {
-	ctx, _, _, _, keeper := createTestInput(t)
+	ctx, _, _, _, keeper := createTestInput(t, DefaultParams())
 	info, found := keeper.getValidatorSigningInfo(ctx, sdk.ConsAddress(addrs[0]))
 	require.False(t, found)
 	newInfo := ValidatorSigningInfo{
@@ -29,10 +29,10 @@ func TestGetSetValidatorSigningInfo(t *testing.T) {
 }
 
 func TestGetSetValidatorSigningBitArray(t *testing.T) {
-	ctx, _, _, _, keeper := createTestInput(t)
-	missed := keeper.getValidatorSigningBitArray(ctx, sdk.ConsAddress(addrs[0]), 0)
+	ctx, _, _, _, keeper := createTestInput(t, DefaultParams())
+	missed := keeper.getValidatorMissedBlockBitArray(ctx, sdk.ConsAddress(addrs[0]), 0)
 	require.False(t, missed) // treat empty key as not missed
-	keeper.setValidatorSigningBitArray(ctx, sdk.ConsAddress(addrs[0]), 0, true)
-	missed = keeper.getValidatorSigningBitArray(ctx, sdk.ConsAddress(addrs[0]), 0)
+	keeper.setValidatorMissedBlockBitArray(ctx, sdk.ConsAddress(addrs[0]), 0, true)
+	missed = keeper.getValidatorMissedBlockBitArray(ctx, sdk.ConsAddress(addrs[0]), 0)
 	require.True(t, missed) // now should be missed
 }

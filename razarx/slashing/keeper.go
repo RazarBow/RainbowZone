@@ -19,18 +19,19 @@ type Keeper struct {
 	storeKey     sdk.StoreKey
 	cdc          *codec.Codec
 	validatorSet sdk.ValidatorSet
-	params       params.Getter
+	paramspace   params.Subspace
+
 	// codespace
 	codespace sdk.CodespaceType
 }
 
 // NewKeeper creates a slashing keeper
-func NewKeeper(cdc *codec.Codec, key sdk.StoreKey, vs sdk.ValidatorSet, params params.Getter, codespace sdk.CodespaceType) Keeper {
+func NewKeeper(cdc *codec.Codec, key sdk.StoreKey, vs sdk.ValidatorSet, paramspace params.Subspace, codespace sdk.CodespaceType) Keeper {
 	keeper := Keeper{
 		storeKey:     key,
 		cdc:          cdc,
 		validatorSet: vs,
-		params:       params,
+		paramspace:   paramspace.WithTypeTable(ParamTypeTable()),
 		codespace:    codespace,
 	}
 	return keeper
@@ -109,17 +110,17 @@ func (k Keeper) handleValidatorSignature(ctx sdk.Context, addr crypto.Address, p
 	// Update signed block bit array & counter
 	// This counter just tracks the sum of the bit array
 	// That way we avoid needing to read/write the whole array each time
-	previous := k.getValidatorSigningBitArray(ctx, consAddr, index)
+	previous := k.getValidatorMissedBlockBitArray(ctx, consAddr, index)
 	missed := !signed
 	if previous == missed {
 		// Array value at this index has not changed, no need to update counter
 	} else if !previous && missed {
 		// Array value has changed from not missed to missed, increment counter
-		k.setValidatorSigningBitArray(ctx, consAddr, index, true)
+		k.setValidatorMissedBlockBitArray(ctx, consAddr, index, true)
 		signInfo.MissedBlocksCounter++
 	} else if previous && !missed {
 		// Array value has changed from missed to not missed, decrement counter
-		k.setValidatorSigningBitArray(ctx, consAddr, index, false)
+		k.setValidatorMissedBlockBitArray(ctx, consAddr, index, false)
 		signInfo.MissedBlocksCounter--
 	}
 
