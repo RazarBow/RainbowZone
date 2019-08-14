@@ -9,59 +9,40 @@ import (
 	"github.com/cosmos/cosmos-sdk/baseapp"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/cosmos/cosmos-sdk/x/auth"
-	"github.com/cosmos/cosmos-sdk/x/auth/types"
-	"github.com/cosmos/cosmos-sdk/x/simulation"
+	"github.com/cosmos/cosmos-sdk/x/mock/simulation"
 )
 
 // SimulateDeductFee
-func SimulateDeductFee(ak auth.AccountKeeper, supplyKeeper types.SupplyKeeper) simulation.Operation {
+func SimulateDeductFee(m auth.AccountMapper, f auth.FeeCollectionKeeper) simulation.Operation {
 	return func(r *rand.Rand, app *baseapp.BaseApp, ctx sdk.Context,
-		accs []simulation.Account) (
-		opMsg simulation.OperationMsg, fOps []simulation.FutureOperation, err error) {
+		accs []simulation.Account, event func(string)) (
+		action string, fOp []simulation.FutureOperation, err error) {
 
 		account := simulation.RandomAcc(r, accs)
-		stored := ak.GetAccount(ctx, account.Address)
+		stored := m.GetAccount(ctx, account.Address)
 		initCoins := stored.GetCoins()
-		opMsg = simulation.NewOperationMsgBasic(types.ModuleName, "deduct_fee", "", false, nil)
-
-		feeCollector := ak.GetAccount(ctx, supplyKeeper.GetModuleAddress(types.FeeCollectorName))
-		if feeCollector == nil {
-			panic(fmt.Errorf("fee collector account hasn't been set"))
-		}
 
 		if len(initCoins) == 0 {
-			return opMsg, nil, nil
+			event(fmt.Sprintf("auth/SimulateDeductFee/false"))
+			return action, nil, nil
 		}
 
 		denomIndex := r.Intn(len(initCoins))
-		randCoin := initCoins[denomIndex]
-
-		amt, err := randPositiveInt(r, randCoin.Amount)
+		amt, err := randPositiveInt(r, initCoins[denomIndex].Amount)
 		if err != nil {
-			return opMsg, nil, nil
+			event(fmt.Sprintf("auth/SimulateDeductFee/false"))
+			return action, nil, nil
 		}
 
-		// Create a random fee and verify the fees are within the account's spendable
-		// balance.
-		fees := sdk.NewCoins(sdk.NewCoin(randCoin.Denom, amt))
-		spendableCoins := stored.SpendableCoins(ctx.BlockHeader().Time)
-		if _, hasNeg := spendableCoins.SafeSub(fees); hasNeg {
-			return opMsg, nil, nil
-		}
+		coins := sdk.Coins{sdk.NewCoin(initCoins[denomIndex].Denom, amt)}
+		stored.SetCoins(initCoins.Minus(coins))
+		m.SetAccount(ctx, stored)
+		f.AddCollectedFees(ctx, coins)
 
-		// get the new account balance
-		_, hasNeg := initCoins.SafeSub(fees)
-		if hasNeg {
-			return opMsg, nil, nil
-		}
+		event(fmt.Sprintf("auth/SimulateDeductFee/true"))
 
-		err = supplyKeeper.SendCoinsFromAccountToModule(ctx, stored.GetAddress(), types.FeeCollectorName, fees)
-		if err != nil {
-			panic(err)
-		}
-
-		opMsg.OK = true
-		return opMsg, nil, nil
+		action = "TestDeductFee"
+		return action, nil, nil
 	}
 }
 
