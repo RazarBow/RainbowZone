@@ -14,21 +14,30 @@ func (k Keeper) onValidatorCreated(ctx sdk.Context, addr sdk.ValAddress) {
 	vdi := types.ValidatorDistInfo{
 		OperatorAddr:            addr,
 		FeePoolWithdrawalHeight: height,
-		Pool:           types.DecCoins{},
-		PoolCommission: types.DecCoins{},
-		DelAccum:       types.NewTotalAccum(height),
+		Pool:                    types.DecCoins{},
+		PoolCommission:          types.DecCoins{},
+		DelAccum:                types.NewTotalAccum(height),
 	}
 	k.SetValidatorDistInfo(ctx, vdi)
 }
 
 // Withdrawal all validator rewards
 func (k Keeper) onValidatorCommissionChange(ctx sdk.Context, addr sdk.ValAddress) {
-	k.WithdrawValidatorRewardsAll(ctx, addr)
+	if err := k.WithdrawValidatorRewardsAll(ctx, addr); err != nil {
+		panic(err)
+	}
 }
 
 // Withdrawal all validator distribution rewards and cleanup the distribution record
 func (k Keeper) onValidatorRemoved(ctx sdk.Context, addr sdk.ValAddress) {
 	k.RemoveValidatorDistInfo(ctx, addr)
+}
+
+// Withdraw all validator rewards
+func (k Keeper) onValidatorBeginUnbonding(ctx sdk.Context, addr sdk.ValAddress) {
+	if err := k.WithdrawValidatorRewardsAll(ctx, addr); err != nil {
+		panic(err)
+	}
 }
 
 //_________________________________________________________________________________________
@@ -50,7 +59,9 @@ func (k Keeper) onDelegationCreated(ctx sdk.Context, delAddr sdk.AccAddress,
 func (k Keeper) onDelegationSharesModified(ctx sdk.Context, delAddr sdk.AccAddress,
 	valAddr sdk.ValAddress) {
 
-	k.WithdrawDelegationReward(ctx, delAddr, valAddr)
+	if err := k.WithdrawDelegationReward(ctx, delAddr, valAddr); err != nil {
+		panic(err)
+	}
 }
 
 // Withdrawal all validator distribution rewards and cleanup the distribution record
@@ -92,6 +103,9 @@ func (h Hooks) OnDelegationRemoved(ctx sdk.Context, delAddr sdk.AccAddress, valA
 	h.k.onDelegationRemoved(ctx, delAddr, valAddr)
 }
 
+func (h Hooks) OnValidatorBeginUnbonding(ctx sdk.Context, _ sdk.ConsAddress, addr sdk.ValAddress) {
+	h.k.onValidatorBeginUnbonding(ctx, addr)
+}
+
 // nolint - unused hooks for interface
-func (h Hooks) OnValidatorBonded(ctx sdk.Context, addr sdk.ConsAddress)         {}
-func (h Hooks) OnValidatorBeginUnbonding(ctx sdk.Context, addr sdk.ConsAddress) {}
+func (h Hooks) OnValidatorBonded(ctx sdk.Context, addr sdk.ConsAddress) {}
