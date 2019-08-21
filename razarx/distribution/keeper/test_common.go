@@ -30,15 +30,22 @@ var (
 	delAddr2 = sdk.AccAddress(delPk2.Address())
 	delAddr3 = sdk.AccAddress(delPk3.Address())
 
-	valPk1      = ed25519.GenPrivKey().PubKey()
-	valPk2      = ed25519.GenPrivKey().PubKey()
-	valPk3      = ed25519.GenPrivKey().PubKey()
-	valAddr1    = sdk.ValAddress(valPk1.Address())
-	valAddr2    = sdk.ValAddress(valPk2.Address())
-	valAddr3    = sdk.ValAddress(valPk3.Address())
-	valAccAddr1 = sdk.AccAddress(valPk1.Address()) // generate acc addresses for these validator keys too
-	valAccAddr2 = sdk.AccAddress(valPk2.Address())
-	valAccAddr3 = sdk.AccAddress(valPk3.Address())
+	valOpPk1    = ed25519.GenPrivKey().PubKey()
+	valOpPk2    = ed25519.GenPrivKey().PubKey()
+	valOpPk3    = ed25519.GenPrivKey().PubKey()
+	valOpAddr1  = sdk.ValAddress(valOpPk1.Address())
+	valOpAddr2  = sdk.ValAddress(valOpPk2.Address())
+	valOpAddr3  = sdk.ValAddress(valOpPk3.Address())
+	valAccAddr1 = sdk.AccAddress(valOpPk1.Address()) // generate acc addresses for these validator keys too
+	valAccAddr2 = sdk.AccAddress(valOpPk2.Address())
+	valAccAddr3 = sdk.AccAddress(valOpPk3.Address())
+
+	valConsPk1   = ed25519.GenPrivKey().PubKey()
+	valConsPk2   = ed25519.GenPrivKey().PubKey()
+	valConsPk3   = ed25519.GenPrivKey().PubKey()
+	valConsAddr1 = sdk.ConsAddress(valConsPk1.Address())
+	valConsAddr2 = sdk.ConsAddress(valConsPk2.Address())
+	valConsAddr3 = sdk.ConsAddress(valConsPk3.Address())
 
 	addrs = []sdk.AccAddress{
 		delAddr1, delAddr2, delAddr3,
@@ -63,40 +70,50 @@ func MakeTestCodec() *codec.Codec {
 	return cdc
 }
 
+// test input with default values
+func CreateTestInputDefault(t *testing.T, isCheckTx bool, initCoins int64) (
+	sdk.Context, auth.AccountMapper, Keeper, stake.Keeper, DummyFeeCollectionKeeper) {
+
+	communityTax := sdk.NewDecWithPrec(2, 2)
+	return CreateTestInputAdvanced(t, isCheckTx, initCoins, communityTax)
+}
+
 // hogpodge of all sorts of input required for testing
-func CreateTestInput(t *testing.T, isCheckTx bool, initCoins int64) (
-	sdk.Context, auth.AccountMapper, Keeper, stake.Keeper) {
+func CreateTestInputAdvanced(t *testing.T, isCheckTx bool, initCoins int64,
+	communityTax sdk.Dec) (
+	sdk.Context, auth.AccountMapper, Keeper, stake.Keeper, DummyFeeCollectionKeeper) {
 
 	keyDistr := sdk.NewKVStoreKey("distr")
-	tkeyDistr := sdk.NewTransientStoreKey("transient_distr")
 	keyStake := sdk.NewKVStoreKey("stake")
 	tkeyStake := sdk.NewTransientStoreKey("transient_stake")
 	keyAcc := sdk.NewKVStoreKey("acc")
 	keyFeeCollection := sdk.NewKVStoreKey("fee")
 	keyParams := sdk.NewKVStoreKey("params")
+	tkeyParams := sdk.NewTransientStoreKey("transient_params")
 
 	db := dbm.NewMemDB()
 	ms := store.NewCommitMultiStore(db)
 
-	ms.MountStoreWithDB(tkeyDistr, sdk.StoreTypeTransient, nil)
 	ms.MountStoreWithDB(keyDistr, sdk.StoreTypeIAVL, db)
 	ms.MountStoreWithDB(tkeyStake, sdk.StoreTypeTransient, nil)
 	ms.MountStoreWithDB(keyStake, sdk.StoreTypeIAVL, db)
 	ms.MountStoreWithDB(keyAcc, sdk.StoreTypeIAVL, db)
 	ms.MountStoreWithDB(keyFeeCollection, sdk.StoreTypeIAVL, db)
 	ms.MountStoreWithDB(keyParams, sdk.StoreTypeIAVL, db)
+	ms.MountStoreWithDB(tkeyParams, sdk.StoreTypeTransient, db)
 
 	err := ms.LoadLatestVersion()
 	require.Nil(t, err)
 
-	ctx := sdk.NewContext(ms, abci.Header{ChainID: "foochainid"}, isCheckTx, log.NewNopLogger())
 	cdc := MakeTestCodec()
+	pk := params.NewKeeper(cdc, keyParams, tkeyParams)
+
+	ctx := sdk.NewContext(ms, abci.Header{ChainID: "foochainid"}, isCheckTx, log.NewNopLogger())
 	accountMapper := auth.NewAccountMapper(cdc, keyAcc, auth.ProtoBaseAccount)
 	ck := bank.NewBaseKeeper(accountMapper)
-	sk := stake.NewKeeper(cdc, keyStake, tkeyStake, ck, stake.DefaultCodespace)
+	sk := stake.NewKeeper(cdc, keyStake, tkeyStake, ck, pk.Subspace(stake.DefaultParamspace), stake.DefaultCodespace)
 	sk.SetPool(ctx, stake.InitialPool())
 	sk.SetParams(ctx, stake.DefaultParams())
-	sk.InitIntraTxCounter(ctx)
 
 	// fill all the addresses with some coins, set the loose pool tokens simultaneously
 	for _, addr := range addrs {
@@ -109,16 +126,35 @@ func CreateTestInput(t *testing.T, isCheckTx bool, initCoins int64) (
 		sk.SetPool(ctx, pool)
 	}
 
-	fck := auth.NewFeeCollectionKeeper(cdc, keyFeeCollection)
-	pk := params.NewKeeper(cdc, keyParams)
-	keeper := NewKeeper(cdc, keyDistr, tkeyDistr, pk.Setter(), ck, sk, fck, types.DefaultCodespace)
+	fck := DummyFeeCollectionKeeper{}
+	keeper := NewKeeper(cdc, keyDistr, pk.Subspace(DefaultParamspace), ck, sk, fck, types.DefaultCodespace)
 
 	// set the distribution hooks on staking
 	sk = sk.WithHooks(keeper.Hooks())
 
 	// set genesis items required for distribution
 	keeper.SetFeePool(ctx, types.InitialFeePool())
-	keeper.SetCommunityTax(ctx, sdk.NewDecWithPrec(2, 2))
+	keeper.SetCommunityTax(ctx, communityTax)
+	keeper.SetBaseProposerReward(ctx, sdk.NewDecWithPrec(1, 2))
+	keeper.SetBonusProposerReward(ctx, sdk.NewDecWithPrec(4, 2))
 
-	return ctx, accountMapper, keeper, sk
+	return ctx, accountMapper, keeper, sk, fck
+}
+
+//__________________________________________________________________________________
+// fee collection keeper used only for testing
+type DummyFeeCollectionKeeper struct{}
+
+var heldFees sdk.Coins
+var _ types.FeeCollectionKeeper = DummyFeeCollectionKeeper{}
+
+// nolint
+func (fck DummyFeeCollectionKeeper) GetCollectedFees(_ sdk.Context) sdk.Coins {
+	return heldFees
+}
+func (fck DummyFeeCollectionKeeper) SetCollectedFees(in sdk.Coins) {
+	heldFees = in
+}
+func (fck DummyFeeCollectionKeeper) ClearCollectedFees(_ sdk.Context) {
+	heldFees = sdk.Coins{}
 }

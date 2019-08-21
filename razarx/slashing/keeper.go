@@ -37,7 +37,8 @@ func NewKeeper(cdc *codec.Codec, key sdk.StoreKey, vs sdk.ValidatorSet, paramspa
 	return keeper
 }
 
-// handle a validator signing two blocks at the same height
+// handle a validator signing two blocks at the same height.
+// power: power of the double-signing validator at the height of infraction.
 func (k Keeper) handleDoubleSign(ctx sdk.Context, addr crypto.Address, infractionHeight int64, timestamp time.Time, power int64) {
 	logger := ctx.Logger().With("module", "x/slashing")
 	time := ctx.BlockHeader().Time
@@ -70,7 +71,12 @@ func (k Keeper) handleDoubleSign(ctx sdk.Context, addr crypto.Address, infractio
 	revisedFraction := k.capBySlashingPeriod(ctx, consAddr, fraction, distributionHeight)
 	logger.Info(fmt.Sprintf("Fraction slashed capped by slashing period from %v to %v", fraction, revisedFraction))
 
-	// Slash validator
+	// Slash validator.
+	// `power` is the int64 power of the validator as provided to/by
+	// Tendermint.  This value is validator.Tokens as sent to Tendermint via
+	// ABCI, and now received as evidence.
+	// The revisedFraction (which is the new fraction to be slashed) is passed
+	// in separately to separately slash unbonding and rebonding delegations.
 	k.validatorSet.Slash(ctx, consAddr, distributionHeight, power, revisedFraction)
 
 	// Jail validator if not already jailed
@@ -112,16 +118,17 @@ func (k Keeper) handleValidatorSignature(ctx sdk.Context, addr crypto.Address, p
 	// That way we avoid needing to read/write the whole array each time
 	previous := k.getValidatorMissedBlockBitArray(ctx, consAddr, index)
 	missed := !signed
-	if previous == missed {
-		// Array value at this index has not changed, no need to update counter
-	} else if !previous && missed {
+	switch {
+	case !previous && missed:
 		// Array value has changed from not missed to missed, increment counter
 		k.setValidatorMissedBlockBitArray(ctx, consAddr, index, true)
 		signInfo.MissedBlocksCounter++
-	} else if previous && !missed {
+	case previous && !missed:
 		// Array value has changed from missed to not missed, decrement counter
 		k.setValidatorMissedBlockBitArray(ctx, consAddr, index, false)
 		signInfo.MissedBlocksCounter--
+	default:
+		// Array value at this index has not changed, no need to update counter
 	}
 
 	if missed {
@@ -144,6 +151,10 @@ func (k Keeper) handleValidatorSignature(ctx sdk.Context, addr crypto.Address, p
 			k.validatorSet.Slash(ctx, consAddr, distributionHeight, power, k.SlashFractionDowntime(ctx))
 			k.validatorSet.Jail(ctx, consAddr)
 			signInfo.JailedUntil = ctx.BlockHeader().Time.Add(k.DowntimeUnbondDuration(ctx))
+			// We need to reset the counter & array so that the validator won't be immediately slashed for downtime upon rebonding.
+			signInfo.MissedBlocksCounter = 0
+			signInfo.IndexOffset = 0
+			k.clearValidatorMissedBlockBitArray(ctx, consAddr)
 		} else {
 			// Validator was (a) not found or (b) already jailed, don't slash
 			logger.Info(fmt.Sprintf("Validator %s would have been slashed for downtime, but was either not found in store or already jailed",
