@@ -1,8 +1,6 @@
 package keeper
 
 import (
-	"fmt"
-
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/cosmos/cosmos-sdk/x/distribution/types"
 )
@@ -22,22 +20,18 @@ func (k Keeper) onValidatorCreated(ctx sdk.Context, addr sdk.ValAddress) {
 }
 
 // Withdrawal all validator rewards
-func (k Keeper) onValidatorCommissionChange(ctx sdk.Context, addr sdk.ValAddress) {
-	if err := k.WithdrawValidatorRewardsAll(ctx, addr); err != nil {
-		panic(err)
+func (k Keeper) onValidatorModified(ctx sdk.Context, addr sdk.ValAddress) {
+	// This doesn't need to be run at genesis
+	if ctx.BlockHeight() > 0 {
+		if err := k.WithdrawValidatorRewardsAll(ctx, addr); err != nil {
+			panic(err)
+		}
 	}
 }
 
 // Withdrawal all validator distribution rewards and cleanup the distribution record
 func (k Keeper) onValidatorRemoved(ctx sdk.Context, addr sdk.ValAddress) {
 	k.RemoveValidatorDistInfo(ctx, addr)
-}
-
-// Withdraw all validator rewards
-func (k Keeper) onValidatorBeginUnbonding(ctx sdk.Context, addr sdk.ValAddress) {
-	if err := k.WithdrawValidatorRewardsAll(ctx, addr); err != nil {
-		panic(err)
-	}
 }
 
 //_________________________________________________________________________________________
@@ -52,7 +46,6 @@ func (k Keeper) onDelegationCreated(ctx sdk.Context, delAddr sdk.AccAddress,
 		WithdrawalHeight: ctx.BlockHeight(),
 	}
 	k.SetDelegationDistInfo(ctx, ddi)
-	ctx.Logger().With("module", "x/distribution").Error(fmt.Sprintf("ddi created: %v", ddi))
 }
 
 // Withdrawal all validator rewards
@@ -87,25 +80,26 @@ func (k Keeper) Hooks() Hooks { return Hooks{k} }
 func (h Hooks) OnValidatorCreated(ctx sdk.Context, addr sdk.ValAddress) {
 	h.k.onValidatorCreated(ctx, addr)
 }
-func (h Hooks) OnValidatorCommissionChange(ctx sdk.Context, addr sdk.ValAddress) {
-	h.k.onValidatorCommissionChange(ctx, addr)
+func (h Hooks) OnValidatorModified(ctx sdk.Context, addr sdk.ValAddress) {
+	h.k.onValidatorModified(ctx, addr)
 }
 func (h Hooks) OnValidatorRemoved(ctx sdk.Context, addr sdk.ValAddress) {
 	h.k.onValidatorRemoved(ctx, addr)
 }
 func (h Hooks) OnDelegationCreated(ctx sdk.Context, delAddr sdk.AccAddress, valAddr sdk.ValAddress) {
+	h.k.onValidatorModified(ctx, valAddr)
 	h.k.onDelegationCreated(ctx, delAddr, valAddr)
 }
 func (h Hooks) OnDelegationSharesModified(ctx sdk.Context, delAddr sdk.AccAddress, valAddr sdk.ValAddress) {
+	h.k.onValidatorModified(ctx, valAddr)
 	h.k.onDelegationSharesModified(ctx, delAddr, valAddr)
 }
 func (h Hooks) OnDelegationRemoved(ctx sdk.Context, delAddr sdk.AccAddress, valAddr sdk.ValAddress) {
 	h.k.onDelegationRemoved(ctx, delAddr, valAddr)
 }
-
 func (h Hooks) OnValidatorBeginUnbonding(ctx sdk.Context, _ sdk.ConsAddress, addr sdk.ValAddress) {
-	h.k.onValidatorBeginUnbonding(ctx, addr)
+	h.k.onValidatorModified(ctx, addr)
 }
-
-// nolint - unused hooks for interface
-func (h Hooks) OnValidatorBonded(ctx sdk.Context, addr sdk.ConsAddress) {}
+func (h Hooks) OnValidatorBonded(ctx sdk.Context, _ sdk.ConsAddress, addr sdk.ValAddress) {
+	h.k.onValidatorModified(ctx, addr)
+}

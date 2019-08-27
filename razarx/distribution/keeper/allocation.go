@@ -1,24 +1,21 @@
 package keeper
 
 import (
-	"fmt"
-
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/cosmos/cosmos-sdk/x/distribution/types"
 )
 
 // Allocate fees handles distribution of the collected fees
-func (k Keeper) AllocateFees(ctx sdk.Context, percentVotes sdk.Dec, proposer sdk.ConsAddress) {
-	ctx.Logger().With("module", "x/distribution").Error(fmt.Sprintf("allocation height: %v", ctx.BlockHeight()))
+func (k Keeper) AllocateTokens(ctx sdk.Context, percentVotes sdk.Dec, proposer sdk.ConsAddress) {
 
 	// get the proposer of this block
 	proposerValidator := k.stakeKeeper.ValidatorByConsAddr(ctx, proposer)
+
 	proposerDist := k.GetValidatorDistInfo(ctx, proposerValidator.GetOperator())
 
 	// get the fees which have been getting collected through all the
 	// transactions in the block
 	feesCollected := k.feeCollectionKeeper.GetCollectedFees(ctx)
-	fmt.Printf("fees collected: %v\n", feesCollected)
 	feesCollectedDec := types.NewDecCoins(feesCollected)
 
 	// allocated rewards to proposer
