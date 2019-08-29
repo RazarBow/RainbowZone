@@ -1,10 +1,7 @@
 package types
 
 import (
-	"fmt"
-
 	sdk "github.com/cosmos/cosmos-sdk/types"
-	cmn "github.com/tendermint/tendermint/libs/common"
 )
 
 // total accumulation tracker
@@ -32,40 +29,19 @@ func (ta TotalAccum) UpdateForNewHeight(height int64, accumCreatedPerBlock sdk.D
 	return ta
 }
 
-// update total validator accumulation factor for the new height
-// CONTRACT: height should be greater than the old height
-func (ta TotalAccum) UpdateForNewHeight_DEBUG(height int64, accumCreatedPerBlock sdk.Dec) TotalAccum {
-	blocks := height - ta.UpdateHeight
-	if blocks < 0 {
-		panic("reverse updated for new height")
-	}
-	fmt.Println(
-		cmn.Blue(
-			fmt.Sprintf("FP Add %v * %v = %v +=> %v",
-				accumCreatedPerBlock, sdk.NewInt(blocks),
-				accumCreatedPerBlock.MulInt(sdk.NewInt(blocks)),
-				ta.Accum.Add(accumCreatedPerBlock.MulInt(sdk.NewInt(blocks))),
-			),
-		),
-	)
-	ta.Accum = ta.Accum.Add(accumCreatedPerBlock.MulInt(sdk.NewInt(blocks)))
-	ta.UpdateHeight = height
-	return ta
-}
-
 //___________________________________________________________________________________________
 
 // global fee pool for distribution
 type FeePool struct {
 	TotalValAccum TotalAccum `json:"val_accum"`      // total valdator accum held by validators
-	Pool          DecCoins   `json:"pool"`           // funds for all validators which have yet to be withdrawn
+	ValPool       DecCoins   `json:"val_pool"`       // funds for all validators which have yet to be withdrawn
 	CommunityPool DecCoins   `json:"community_pool"` // pool for community funds yet to be spent
 }
 
 // update total validator accumulation factor
 // NOTE: Do not call this except from ValidatorDistInfo.TakeFeePoolRewards().
 func (f FeePool) UpdateTotalValAccum(height int64, totalBondedTokens sdk.Dec) FeePool {
-	f.TotalValAccum = f.TotalValAccum.UpdateForNewHeight_DEBUG(height, totalBondedTokens)
+	f.TotalValAccum = f.TotalValAccum.UpdateForNewHeight(height, totalBondedTokens)
 	return f
 }
 
@@ -73,7 +49,7 @@ func (f FeePool) UpdateTotalValAccum(height int64, totalBondedTokens sdk.Dec) Fe
 func InitialFeePool() FeePool {
 	return FeePool{
 		TotalValAccum: NewTotalAccum(0),
-		Pool:          DecCoins{},
+		ValPool:       DecCoins{},
 		CommunityPool: DecCoins{},
 	}
 }
