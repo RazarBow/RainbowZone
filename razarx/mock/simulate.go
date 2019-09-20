@@ -64,7 +64,8 @@ func SimulateFromSeed(tb testing.TB, app *baseapp.BaseApp,
 	params := RandomParams(r) // := DefaultParams()
 	fmt.Printf("Randomized simulation params: %+v\n", params)
 	timestamp := RandTimestamp(r)
-	fmt.Printf("Starting the simulation from time %v, unixtime %v\n", timestamp.UTC().Format(time.UnixDate), timestamp.Unix())
+	fmt.Printf("Starting the simulation from time %v, unixtime %v\n",
+		timestamp.UTC().Format(time.UnixDate), timestamp.Unix())
 	timeDiff := maxTimePerBlock - minTimePerBlock
 
 	accs := RandomAccounts(r, params.NumKeys)
@@ -76,11 +77,16 @@ func SimulateFromSeed(tb testing.TB, app *baseapp.BaseApp,
 	}
 
 	validators := initChain(r, params, accs, setups, app, appStateFn)
+
 	// Second variable to keep pending validator set (delayed one block since TM 0.24)
 	// Initially this is the same as the initial validator set
 	nextValidators := validators
 
-	header := abci.Header{Height: 1, Time: timestamp, ProposerAddress: randomProposer(r, validators)}
+	header := abci.Header{
+		Height:          1,
+		Time:            timestamp,
+		ProposerAddress: randomProposer(r, validators),
+	}
 	opCount := 0
 
 	// Setup code to catch SIGTERM's
@@ -88,7 +94,8 @@ func SimulateFromSeed(tb testing.TB, app *baseapp.BaseApp,
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
 	go func() {
 		receivedSignal := <-c
-		fmt.Printf("\nExiting early due to %s, on block %d, operation %d\n", receivedSignal, header.Height, opCount)
+		fmt.Printf("\nExiting early due to %s, on block %d, operation %d\n",
+			receivedSignal, header.Height, opCount)
 		simError = fmt.Errorf("Exited due to %s", receivedSignal)
 		stopEarly = true
 	}()
@@ -96,7 +103,8 @@ func SimulateFromSeed(tb testing.TB, app *baseapp.BaseApp,
 	var pastTimes []time.Time
 	var pastVoteInfos [][]abci.VoteInfo
 
-	request := RandomRequestBeginBlock(r, params, validators, pastTimes, pastVoteInfos, event, header)
+	request := RandomRequestBeginBlock(r, params,
+		validators, pastTimes, pastVoteInfos, event, header)
 
 	// These are operations which have been queued by previous operations
 	operationQueue := make(map[int][]Operation)
@@ -122,11 +130,14 @@ func SimulateFromSeed(tb testing.TB, app *baseapp.BaseApp,
 				stackTrace := string(debug.Stack())
 				fmt.Println(stackTrace)
 				displayLogs()
-				simError = fmt.Errorf("Simulation halted due to panic on block %d", header.Height)
+				simError = fmt.Errorf(
+					"Simulation halted due to panic on block %d",
+					header.Height)
 			}
 		}()
 	}
 
+	// TODO split up the contents of this for loop into new functions
 	for i := 0; i < numBlocks && !stopEarly; i++ {
 		// Log the header time for future lookup
 		pastTimes = append(pastTimes, header.Time)
@@ -194,11 +205,13 @@ func SimulateFromSeed(tb testing.TB, app *baseapp.BaseApp,
 		}
 
 		// Generate a random RequestBeginBlock with the current validator set for the next block
-		request = RandomRequestBeginBlock(r, params, validators, pastTimes, pastVoteInfos, event, header)
+		request = RandomRequestBeginBlock(r, params, validators,
+			pastTimes, pastVoteInfos, event, header)
 
 		// Update the validator set, which will be reflected in the application on the next block
 		validators = nextValidators
-		nextValidators = updateValidators(tb, r, params, validators, res.ValidatorUpdates, event)
+		nextValidators = updateValidators(tb, r, params,
+			validators, res.ValidatorUpdates, event)
 	}
 	if stopEarly {
 		DisplayEvents(events)
@@ -224,11 +237,9 @@ func createBlockSimulator(testingMode bool, tb testing.TB, t *testing.T, params 
 	operationQueue map[int][]Operation, timeOperationQueue []FutureOperation,
 	totalNumBlocks int, avgBlockSize int, displayLogs func()) blockSimFn {
 
-	var (
-		lastBlocksizeState = 0 // state for [4 * uniform distribution]
-		totalOpWeight      = 0
-		blocksize          int
-	)
+	var lastBlocksizeState = 0 // state for [4 * uniform distribution]
+	var totalOpWeight = 0
+	var blocksize int
 
 	for i := 0; i < len(ops); i++ {
 		totalOpWeight += ops[i].Weight
@@ -278,27 +289,6 @@ func createBlockSimulator(testingMode bool, tb testing.TB, t *testing.T, params 
 	}
 }
 
-// getBlockSize returns a block size as determined from the transition matrix.
-// It targets making average block size the provided parameter. The three
-// states it moves between are:
-//  - "over stuffed" blocks with average size of 2 * avgblocksize,
-//  - normal sized blocks, hitting avgBlocksize on average,
-//  - and empty blocks, with no txs / only txs scheduled from the past.
-func getBlockSize(r *rand.Rand, params Params,
-	lastBlockSizeState, avgBlockSize int) (state, blocksize int) {
-	// TODO: Make default blocksize transition matrix actually make the average
-	// blocksize equal to avgBlockSize.
-	state = params.BlockSizeTransitionMatrix.NextState(r, lastBlockSizeState)
-	if state == 0 {
-		blocksize = r.Intn(avgBlockSize * 4)
-	} else if state == 1 {
-		blocksize = r.Intn(avgBlockSize * 2)
-	} else {
-		blocksize = 0
-	}
-	return state, blocksize
-}
-
 // adds all future operations into the operation queue.
 func queueOperations(queuedOperations map[int][]Operation,
 	queuedTimeOperations []FutureOperation,
@@ -331,47 +321,49 @@ func queueOperations(queuedOperations map[int][]Operation,
 }
 
 // nolint: errcheck
-func runQueuedOperations(queueOperations map[int][]Operation,
+func runQueuedOperations(queueOps map[int][]Operation,
 	height int, tb testing.TB, r *rand.Rand, app *baseapp.BaseApp, ctx sdk.Context,
 	accounts []Account, logWriter func(string),
 	displayLogs func(), event func(string)) (numOpsRan int) {
 
-	if queuedOps, ok := queueOperations[height]; ok {
-		numOps := len(queuedOps)
-		for i := 0; i < numOps; i++ {
-			// For now, queued operations cannot queue more operations.
-			// If a need arises for us to support queued messages to queue more messages, this can
-			// be changed.
-			logUpdate, _, err := queuedOps[i](r, app, ctx, accounts, event)
-			logWriter(logUpdate)
-			if err != nil {
-				displayLogs()
-				tb.FailNow()
-			}
-		}
-		delete(queueOperations, height)
-		return numOps
+	queuedOp, ok := queueOps[height]
+	if !ok {
+		return 0
 	}
-	return 0
-}
 
-func runQueuedTimeOperations(queueOperations []FutureOperation,
-	currentTime time.Time, tb testing.TB, r *rand.Rand,
-	app *baseapp.BaseApp, ctx sdk.Context, accounts []Account,
-	logWriter func(string), displayLogs func(), event func(string)) (numOpsRan int) {
-
-	numOpsRan = 0
-	for len(queueOperations) > 0 && currentTime.After(queueOperations[0].BlockTime) {
+	numOps := len(queuedOp)
+	for i := 0; i < numOps; i++ {
 		// For now, queued operations cannot queue more operations.
 		// If a need arises for us to support queued messages to queue more messages, this can
 		// be changed.
-		logUpdate, _, err := queueOperations[0].Op(r, app, ctx, accounts, event)
+		logUpdate, _, err := queuedOp[i](r, app, ctx, accounts, event)
 		logWriter(logUpdate)
 		if err != nil {
 			displayLogs()
 			tb.FailNow()
 		}
-		queueOperations = queueOperations[1:]
+	}
+	delete(queueOps, height)
+	return numOps
+}
+
+func runQueuedTimeOperations(queueOps []FutureOperation,
+	currentTime time.Time, tb testing.TB, r *rand.Rand,
+	app *baseapp.BaseApp, ctx sdk.Context, accounts []Account,
+	logWriter func(string), displayLogs func(), event func(string)) (numOpsRan int) {
+
+	numOpsRan = 0
+	for len(queueOps) > 0 && currentTime.After(queueOps[0].BlockTime) {
+		// For now, queued operations cannot queue more operations.
+		// If a need arises for us to support queued messages to queue more messages, this can
+		// be changed.
+		logUpdate, _, err := queueOps[0].Op(r, app, ctx, accounts, event)
+		logWriter(logUpdate)
+		if err != nil {
+			displayLogs()
+			tb.FailNow()
+		}
+		queueOps = queueOps[1:]
 		numOpsRan++
 	}
 	return numOpsRan
@@ -385,11 +377,13 @@ func RandomRequestBeginBlock(r *rand.Rand, params Params,
 	event func(string), header abci.Header) abci.RequestBeginBlock {
 
 	if len(validators) == 0 {
-		return abci.RequestBeginBlock{Header: header}
+		return abci.RequestBeginBlock{
+			Header: header,
+		}
 	}
 	voteInfos := make([]abci.VoteInfo, len(validators))
-	i := 0
-	for _, key := range getKeys(validators) {
+
+	for i, key := range getKeys(validators) {
 		mVal := validators[key]
 		mVal.livenessState = params.LivenessTransitionMatrix.NextState(r, mVal.livenessState)
 		signed := true
@@ -403,11 +397,13 @@ func RandomRequestBeginBlock(r *rand.Rand, params Params,
 			// offline
 			signed = false
 		}
+
 		if signed {
 			event("beginblock/signing/signed")
 		} else {
 			event("beginblock/signing/missed")
 		}
+
 		pubkey, err := tmtypes.PB2TM.PubKey(mVal.val.PubKey)
 		if err != nil {
 			panic(err)
@@ -419,36 +415,46 @@ func RandomRequestBeginBlock(r *rand.Rand, params Params,
 			},
 			SignedLastBlock: signed,
 		}
-		i++
 	}
-	// TODO: Determine capacity before allocation
-	evidence := make([]abci.Evidence, 0)
-	// Anything but the first block
-	if len(pastTimes) > 0 {
-		for r.Float64() < params.EvidenceFraction {
-			height := header.Height
-			time := header.Time
-			vals := voteInfos
-			if r.Float64() < params.PastEvidenceFraction {
-				height = int64(r.Intn(int(header.Height) - 1))
-				time = pastTimes[height]
-				vals = pastVoteInfos[height]
-			}
-			validator := vals[r.Intn(len(vals))].Validator
-			var totalVotingPower int64
-			for _, val := range vals {
-				totalVotingPower += val.Validator.Power
-			}
-			evidence = append(evidence, abci.Evidence{
-				Type:             tmtypes.ABCIEvidenceTypeDuplicateVote,
-				Validator:        validator,
-				Height:           height,
-				Time:             time,
-				TotalVotingPower: totalVotingPower,
-			})
-			event("beginblock/evidence")
+
+	// return if no past times
+	if len(pastTimes) <= 0 {
+		return abci.RequestBeginBlock{
+			Header: header,
+			LastCommitInfo: abci.LastCommitInfo{
+				Votes: voteInfos,
+			},
 		}
 	}
+
+	// TODO: Determine capacity before allocation
+	evidence := make([]abci.Evidence, 0)
+	for r.Float64() < params.EvidenceFraction {
+		height := header.Height
+		time := header.Time
+		vals := voteInfos
+		if r.Float64() < params.PastEvidenceFraction {
+			height = int64(r.Intn(int(header.Height) - 1))
+			time = pastTimes[height]
+			vals = pastVoteInfos[height]
+		}
+		validator := vals[r.Intn(len(vals))].Validator
+		var totalVotingPower int64
+
+		for _, val := range vals {
+			totalVotingPower += val.Validator.Power
+		}
+
+		evidence = append(evidence, abci.Evidence{
+			Type:             tmtypes.ABCIEvidenceTypeDuplicateVote,
+			Validator:        validator,
+			Height:           height,
+			Time:             time,
+			TotalVotingPower: totalVotingPower,
+		})
+		event("beginblock/evidence")
+	}
+
 	return abci.RequestBeginBlock{
 		Header: header,
 		LastCommitInfo: abci.LastCommitInfo{
